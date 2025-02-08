@@ -33,8 +33,10 @@ export default function Index() {
 
   useEffect(() => {
     setCurrentLevel(1);
-    if (players.length === 0) {
-      if (params.get("p")) setPlayers(JSON.parse(params.get("p")!) || []);
+    if (players.length === 0 && params.get("p")) {
+      fetch(`http://158.101.249.118:2000/api/challenges?id=${params.get("p")}`)
+        .then((res) => res.json())
+        .then((data) => setPlayers(data));
     }
   }, []);
 

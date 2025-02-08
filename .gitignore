@@ -9,3 +9,9 @@ frontend/build/
 backend/venv
 backend/challenges.db
 backend/.env
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

@@ -1,0 +1,10 @@
+version: "3"
+services:
+  bot:
+    build: .
+    command: python bot.py
+  server:
+    build: .
+    command: python server.py
+    ports:
+      - "2000:2000"

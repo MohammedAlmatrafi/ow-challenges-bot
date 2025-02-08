@@ -1,13 +1,14 @@
 import os
 import json
 import urllib
-import urllib.parse
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 from discord import app_commands
 import sqlite3
 import base64
+import uuid
+from database import *
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
@@ -21,73 +22,6 @@ intents.voice_states = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-# Connect to the SQLite database
-DB_PATH = os.path.join(os.path.dirname(__file__), 'challenges.db')
-
-def initialize_database():
-    """Initialize the database and create the table if it doesn't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_challenges (
-            server_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            challenges_attended INTEGER DEFAULT 0,
-            challenges_won INTEGER DEFAULT 0,
-            PRIMARY KEY (server_id, user_id)
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-initialize_database()
-
-def get_challenge_stats(server_id, user_id):
-    """Retrieve the challenge stats for a user in a specific server."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT challenges_attended, challenges_won
-        FROM user_challenges
-        WHERE server_id = ? AND user_id = ?
-    """, (server_id, user_id))
-    result = cursor.fetchone()
-    conn.close()
-    return result or (0, 0)  # Default to (0, 0) if no record exists
-
-def initialize_user(server_id: int, user_id: int):
-    """Initialize a user and insert them if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR IGNORE INTO user_challenges (server_id, user_id)
-        VALUES (?, ?);
-    """, (server_id, user_id))
-    conn.commit()
-    conn.close()
-
-def get_sorted_leaderboard(server_id, sort_by="challenges_won"):
-    """Retrieve a sorted leaderboard for a specific server."""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT user_id, challenges_attended, challenges_won
-        FROM user_challenges
-        WHERE server_id = ?
-        ORDER BY {sort_by} DESC
-    """, (server_id,))
-    leaderboard = cursor.fetchall()
-    conn.close()
-    return leaderboard
-
-def get_user_rank(server_id, user_id, sort_by="challenges_won"):
-    """Get the rank of a specific user in the leaderboard."""
-    leaderboard = get_sorted_leaderboard(server_id, sort_by)
-    for rank, (uid, attended, won) in enumerate(leaderboard, start=1):
-        if uid == user_id:
-            return rank, attended, won
-    return None, 0, 0  # User not found in the leaderboard
 
 # GUILD_ID = discord.Object(id=1316972020466192517)
 
@@ -116,7 +50,7 @@ async def start(interaction: discord.Interaction):
     # Get all members in the voice channel
     members = [
         {
-            "n": member.global_name,
+            "n": member.nick or member.global_name,
             "a": member.display_avatar.url,
             "t": "0",
             "c": False,
@@ -125,10 +59,12 @@ async def start(interaction: discord.Interaction):
         for member in voice_channel.members
     ]
 
-    # Send the list of members
+    server_id = interaction.guild.id
     members_json = json.dumps(members)
+    challenge_id = str(uuid.uuid4())
+    add_challenge_to_db(challenge_id, server_id, members_json)
     await interaction.response.send_message(
-        f"Here is your Challenge link:\n[Click Here](https://zippy-dieffenbachia-81709a.netlify.app/?p={urllib.parse.quote(members_json)})", ephemeral=True
+        f"Here is your Challenge link:\n[Click Here](https://zippy-dieffenbachia-81709a.netlify.app/?p={challenge_id})", ephemeral=True
     )
     
 # Define a slash command for selecting a user from the server
@@ -180,6 +116,8 @@ async def get_leaderboard(interaction: discord.Interaction):
             value=f"Wins: {won}",
             inline=False
         )
+        if rank == 10:
+            break
 
     await interaction.response.send_message(embed=embed)
 
@@ -188,9 +126,7 @@ last_entered_command = None
 @bot.tree.command(name='update', description='Update the database to include the latest results')
 async def update_database(interaction: discord.Interaction, code:str):
     server_id = interaction.guild.id
-    conn = sqlite3.connect(DB_PATH)
     try:
-        cursor = conn.cursor()
         code = base64.standard_b64decode(code).decode()
         global last_entered_command
         if(last_entered_command == code):
@@ -201,23 +137,15 @@ async def update_database(interaction: discord.Interaction, code:str):
             if(user.count('-') != 2):
                 raise SyntaxError('Format error')
             (user_id, attended, won) = user.split('-')
-            cursor.execute("""
-            INSERT INTO user_challenges (server_id, user_id, challenges_attended, challenges_won)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(server_id, user_id) DO UPDATE SET
-                challenges_attended = challenges_attended + ?,
-                challenges_won = challenges_won + ?
-            """, (server_id, user_id, attended, won, attended, won))
+            db_update_user_stats(server_id,user_id, attended, won)
             
-        conn.commit()
     except SyntaxError as e :
         await interaction.response.send_message(f'❌ Error: {e}.',ephemeral=True)
         return
     except Exception:
         await interaction.response.send_message(f'❌ Error: Wrong code.',ephemeral=True)
         return
-    
-    conn.close()    
+
     await interaction.response.send_message('Database updated ✅.',ephemeral=True)
 
 # Run the bot with the token from the environment variable
